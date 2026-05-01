@@ -1,0 +1,251 @@
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+out_dir = "diva_sim_img"
+os.makedirs(out_dir, exist_ok=True)
+
+# ==========================================
+# 1. DIVA CORE FUNCTIONS
+# ==========================================
+def sigmoid(x): return 1 / (1 + np.exp(-x))
+def sigmoid_deriv(x): return sigmoid(x) * (1 - sigmoid(x))
+
+def build_params(num_features, num_hidden_nodes, categories, weight_range):
+    return {
+        'input': {
+            'hidden': {
+                'weights': np.random.uniform(-weight_range, weight_range, [num_features, num_hidden_nodes]),
+                'bias': np.random.uniform(-weight_range, weight_range, [1, num_hidden_nodes]),
+            },
+        },
+        'hidden': {
+            **{
+                channel: {
+                    'weights': np.random.uniform(-weight_range, weight_range, [num_hidden_nodes, num_features]),
+                    'bias': np.random.uniform(-weight_range, weight_range, [1, num_features]),
+                } for channel in categories
+            }
+        },
+    }
+
+def forward(params, inputs, channel):
+    hidden_act_raw = np.matmul(inputs, params['input']['hidden']['weights']) + params['input']['hidden']['bias']
+    hidden_act = sigmoid(hidden_act_raw)
+    output_act_raw = np.matmul(hidden_act, params['hidden'][channel]['weights']) + params['hidden'][channel]['bias']
+    output_act = sigmoid(output_act_raw)
+    return [hidden_act_raw, hidden_act, output_act_raw, output_act]
+
+def loss_grad(params, inputs, channel):
+    inputs = np.reshape(inputs, (1, inputs.shape[0]))
+    targets = inputs 
+    
+    hidden_act_raw, hidden_act, output_act_raw, output_act = forward(params, inputs, channel)
+
+    decode_grad = np.multiply(sigmoid_deriv(output_act_raw), (2 * (output_act - targets)))
+    decode_grad_b = decode_grad.sum(axis=0, keepdims=True)
+    decode_grad_w = np.matmul(hidden_act.T, decode_grad)
+
+    encode_grad = np.multiply(sigmoid_deriv(hidden_act_raw), np.matmul(decode_grad, params['hidden'][channel]['weights'].T))
+    encode_grad_w = np.matmul(inputs.T, encode_grad)
+    encode_grad_b = encode_grad.sum(axis=0, keepdims=True)
+
+    return {
+        'input': {'hidden': {'weights': encode_grad_w, 'bias': encode_grad_b}},
+        'hidden': {channel: {'weights': decode_grad_w, 'bias': decode_grad_b}}
+    }
+
+def update_params(params, gradients, lr):
+    for layer in params:
+        for connection in gradients[layer]:
+            params[layer][connection]['weights'] -= lr * gradients[layer][connection]['weights']
+            params[layer][connection]['bias'] -= lr * gradients[layer][connection]['bias']
+    return params
+
+def response(params, inputs, channels, beta, c):
+    inputs = np.reshape(inputs, (1, inputs.shape[0]))
+    targets = inputs
+    
+    activations = np.array([forward(params, inputs, ch)[-1] for ch in channels])
+    
+    diversities = np.abs(np.diff(activations, axis=0)).sum(axis=0)
+    diversities = np.exp(np.clip(beta * diversities, -100, 100))
+    fweights = diversities / (np.sum(diversities) + 1e-8) 
+
+    channel_errors = np.sum(np.square(targets - activations) * fweights, axis=2, keepdims=True)
+    probs = np.exp(np.clip(-c * channel_errors, -100, 100)) / (np.sum(np.exp(np.clip(-c * channel_errors, -100, 100)), axis=0, keepdims=True) + 1e-8)
+    return probs.flatten()
+
+# ==========================================
+# 2. EXPERIMENTAL DATA
+# ==========================================
+full_circle_A = np.array([[.3,.1], [.3,.9], [.7,.1], [.7,.9], [.9,.3], [.9,.5], [.1,.5], [.1,.7]])
+full_circle_B = np.array([[.3,.3], [.5,.3], [.7,.3], [.3,.5], [.3,.7], [.7,.5], [.7,.7], [.5,.7]])
+curtailed_circle_A = np.array([[.7,.1], [.7,.9], [.9,.3], [.9,.5]])
+curtailed_circle_B = np.array([[.5,.3], [.7,.3], [.7,.5], [.7,.7]])
+uniVproxi_A = np.array([[.9,1], [0,.8], [.9,.6]])
+uniVproxi_B = np.array([[0,.4], [0,.2], [0,0]])
+learn_extra_A = np.array([[.2,0],[.2,.1],[.2,.2],[.2,.3],[.2,.4],[.2,.5],[.45,0],[.45,.1],[.45,.2],[.45,.3],[.45,.4],[.45,.5]])
+learn_extra_B = np.array([[.55,.4],[.55,.5],[.55,.6],[.55,.7],[.55,.8],[.55,.9],[.8,.4],[.8,.5],[.8,.6],[.8,.7],[.8,.8],[.8,.9]])
+tmb_A = np.array([[0.4, 0.7], [0.5, 0.7], [0.9, 0.7], [0.5, 0.45], [0.7, 0.55], [0.9, 0.45]])
+tmb_B = np.array([[0.1, 0.55], [0.2, 0.45], [0.6, 0.55], [0.35, 0.3], [0.5, 0.3], [0.6, 0.3]])
+
+# ==========================================
+# 3. MONTE CARLO JOINT-PARAMETER SIMULATION
+# ==========================================
+def run_diva_monte_carlo(apply_filter=True, n_samples=2500):
+    conditions = [
+        {"name": "Full Circle", "A": full_circle_A, "B": full_circle_B, "test": np.array([0.9, 0.7]), "desc": "T0 (0.9, 0.7)"},
+        {"name": "Curtailed Circle", "A": curtailed_circle_A, "B": curtailed_circle_B, "test": np.array([0.9, 0.7]), "desc": "T0 (0.9, 0.7)"},
+        {"name": "Uni vs Proxi", "A": uniVproxi_A, "B": uniVproxi_B, "test": np.array([0.9, 0.4]), "desc": "T1 (0.9, 0.4)"},
+        {"name": "Learn Extra", "A": learn_extra_A, "B": learn_extra_B, "test": np.array([0.6, 0.0]), "desc": "T1 (0.6, 0.0)"},
+        {"name": "Top Middle Bottom", "A": tmb_A, "B": tmb_B, "test": np.array([0.1, 0.7]), "desc": "T0 (0.1, 0.7)"}
+    ]
+
+    print(f"\n--- Running DIVA Monte Carlo Simulation (Filter: {apply_filter}) ---")
+    np.random.seed(42)
+    all_results = []
+
+    for cond in conditions:
+        print(f"Sampling full space for {cond['name']} ({n_samples} networks)...")
+        inputs = np.vstack((cond["A"], cond["B"]))
+        labels = np.array([0]*len(cond["A"]) + [1]*len(cond["B"]))
+        categories = [0, 1]
+        
+        for s in range(n_samples):
+            if (s+1) % 500 == 0:
+                print(f"  ... trained {s+1}/{n_samples} networks")
+                
+            # Sample all hyperparams randomly
+            h_nodes = np.random.choice([2, 4, 6, 8])
+            lr = np.random.uniform(0.1, 0.8)
+            epochs = np.random.randint(50, 200)
+            beta_val = np.random.uniform(0.0, 100.0)
+            c_val = np.random.uniform(0.1, 100.0)
+            
+            # Train model
+            params = build_params(num_features=2, num_hidden_nodes=h_nodes, categories=categories, weight_range=1.0)
+            for e in range(epochs):
+                presentation_order = np.random.permutation(len(inputs))
+                for p in presentation_order:
+                    gradients = loss_grad(params, inputs[p], labels[p])
+                    params = update_params(params, gradients, lr)
+                    
+            # Evaluate Training Accuracy
+            correct = 0
+            for k in range(len(inputs)):
+                resp = response(params, inputs[k], categories, beta_val, c_val)
+                if np.argmax(resp) == labels[k]: correct += 1
+            acc = correct / len(inputs)
+            
+            # Get Test Prediction
+            test_resp = response(params, cond["test"], categories, beta_val, c_val)[0]
+            
+            # Filter Logic
+            if apply_filter and acc < 0.80:
+                continue # Skip adding this to our data
+                
+            all_results.append({
+                "Condition": cond["name"],
+                "Beta": beta_val,
+                "C": c_val,
+                "P_Alpha": test_resp,
+                "Accuracy": acc
+            })
+
+    df = pd.DataFrame(all_results)
+    
+    # ------------------ HEATMAPS ------------------
+    fig_h, axes_h = plt.subplots(2, 3, figsize=(18, 11))
+    axes_h = axes_h.flatten()
+    cmap = plt.cm.RdBu_r
+    cmap.set_bad(color='lightgrey')
+
+    for idx, cond in enumerate(conditions):
+        ax = axes_h[idx]
+        cond_data = df[df["Condition"] == cond["name"]]
+        
+        ax.set_title(f'{cond["name"]}\n{cond["desc"]}', fontweight='bold')
+        ax.set_xlabel(r'Focus Parameter ($\beta$)')
+        ax.set_ylabel(r'Determinism Parameter ($c$)')
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 100)
+        ax.set_facecolor('whitesmoke') # Background color for empty plots
+        
+        # Use tricontourf to map scattered (beta, c, P_Alpha) data to a smooth heatmap
+        if len(cond_data) > 3: # Tricontourf requires at least 3 non-collinear points
+            try:
+                contour = ax.tricontourf(cond_data["Beta"], cond_data["C"], cond_data["P_Alpha"], 
+                                         levels=np.linspace(0, 1, 21), cmap=cmap, alpha=0.9)
+                
+                # Add a 0.5 decision boundary line if both >0.5 and <0.5 exist
+                if cond_data["P_Alpha"].min() <= 0.5 <= cond_data["P_Alpha"].max():
+                    ax.tricontour(cond_data["Beta"], cond_data["C"], cond_data["P_Alpha"], 
+                                  levels=[0.5], colors='black', linestyles='dashed', linewidths=2)
+            except Exception as e:
+                print(f"Could not contour {cond['name']}: {e}")
+        else:
+            ax.text(50, 50, 'No Valid Models\nPassed Accuracy Filter', 
+                    ha='center', va='center', color='gray', fontsize=12, fontweight='bold')
+
+    # Style info box
+    filter_status = ">80% Accuracy Required" if apply_filter else "None (Unfiltered)"
+    info_text = (
+        "DIVA Joint-Parameter Monte Carlo:\n\n"
+        "• Network Samples: 2,500 / Condition\n"
+        "• Hidden Nodes: 2, 4, 6, 8 (Random)\n"
+        "• Learning Rate: 0.1 to 0.8 (Random)\n"
+        "• Epochs: 50 to 200 (Random)\n"
+        r"• Focus ($\beta$): 0.0 to 100.0 (Random)" + "\n"
+        "• Determinism (c): 0.1 to 100.0 (Random)\n"
+        f"• Training Filter: {filter_status}"
+    )
+
+    info_ax_h = axes_h[-1]
+    info_ax_h.axis('off')
+    info_ax_h.text(0.05, 0.95, info_text, fontsize=12, va='top', ha='left',
+                   bbox=dict(boxstyle="round,pad=1.2", fc="white", ec="gray", lw=1.5))
+
+    cbar_ax = info_ax_h.inset_axes([0.05, 0.15, 0.9, 0.08])
+    if 'contour' in locals():
+        cbar = fig_h.colorbar(contour, cax=cbar_ax, orientation='horizontal')
+        cbar.set_label('Predicted P(Alpha)', fontsize=12)
+
+    filter_title = "(>80% Training Accuracy Filter Applied)" if apply_filter else "(Unfiltered)"
+    fig_h.suptitle(f'DIVA Decision Space Map {filter_title}', fontsize=20, fontweight='bold')
+    fig_h.tight_layout(rect=[0, 0.03, 1, 0.94])
+    plt.savefig(os.path.join(out_dir, f'diva_heatmaps_{"filtered" if apply_filter else "unfiltered"}.png'), dpi=300)
+    plt.close(fig_h)
+
+    # ------------------ HISTOGRAMS ------------------
+    fig_d, axes_d = plt.subplots(2, 3, figsize=(18, 11), sharex=True)
+    axes_d = axes_d.flatten()
+
+    for idx, cond in enumerate(conditions):
+        ax = axes_d[idx]
+        cond_data = df[df["Condition"] == cond["name"]]
+        
+        if not cond_data.empty:
+            sns.histplot(data=cond_data, x="P_Alpha", bins=20, kde=True, ax=ax, 
+                         color="darkgreen", edgecolor="black", alpha=0.6)
+            
+        ax.axvline(0.5, color='red', linestyle='--', linewidth=2.5)
+        ax.set_title(f'{cond["name"]}\n{cond["desc"]}', fontweight='bold')
+        ax.set_xlabel('Predicted P(Alpha)')
+        ax.set_xlim(-0.05, 1.05)
+
+    info_ax_d = axes_d[-1]
+    info_ax_d.axis('off')
+    info_ax_d.text(0.05, 0.5, info_text, fontsize=12, va='center', ha='left',
+                   bbox=dict(boxstyle="round,pad=1.2", fc="white", ec="gray", lw=1.5))
+
+    fig_d.suptitle(f'Density of DIVA Repertoire {filter_title}', fontsize=20, fontweight='bold')
+    fig_d.tight_layout(rect=[0, 0.03, 1, 0.94])
+    plt.savefig(os.path.join(out_dir, f'diva_histograms_{"filtered" if apply_filter else "unfiltered"}.png'), dpi=300)
+    plt.show()
+
+# Run both states to get full behavioral picture
+run_diva_monte_carlo(apply_filter=False)
+run_diva_monte_carlo(apply_filter=True)
