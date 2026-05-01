@@ -38,7 +38,7 @@ First, we evaluated the GCM's predictions across the entire parameter grid regar
 #### Unfiltered Parameter Space Heatmaps
 ![Unfiltered GCM Heatmaps](gcm_sim_img/gcm_heatmaps_unfiltered.png)
 
-Looking strictly at the raw mechanics, the GCM appears highly flexible. However, this flexibility is theoretically misleading. A model's predictions on novel test items are only psychologically meaningful if the model has actually mastered the base training categories. 
+ 
 
 ---
 
