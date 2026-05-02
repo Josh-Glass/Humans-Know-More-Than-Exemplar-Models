@@ -119,11 +119,11 @@ def run_diva_monte_carlo(apply_filter=True, n_samples=2500):
                 print(f"  ... trained {s+1}/{n_samples} networks")
                 
             # Sample all hyperparams randomly
-            h_nodes = np.random.choice([2, 4, 6, 8])
-            lr = np.random.uniform(0.1, 0.8)
+            h_nodes = np.random.choice([2, 4, 6, 8, 12, 16])
+            lr = np.random.uniform(0.1, 2)
             epochs = np.random.randint(50, 200)
             beta_val = np.random.uniform(0.0, 100.0)
-            c_val = np.random.uniform(0.1, 100.0)
+            c_val = np.random.uniform(1, 100.0)
             
             # Train model
             params = build_params(num_features=2, num_hidden_nodes=h_nodes, categories=categories, weight_range=1.0)
@@ -199,7 +199,7 @@ def run_diva_monte_carlo(apply_filter=True, n_samples=2500):
         "• Learning Rate: 0.1 to 0.8 (Random)\n"
         "• Epochs: 50 to 200 (Random)\n"
         r"• Focus ($\beta$): 0.0 to 100.0 (Random)" + "\n"
-        "• Determinism (c): 0.1 to 100.0 (Random)\n"
+        "• Determinism (gamma): 1 to 100.0 (Random)\n"
         f"• Training Filter: {filter_status}"
     )
 
@@ -244,7 +244,7 @@ def run_diva_monte_carlo(apply_filter=True, n_samples=2500):
     fig_d.suptitle(f'Density of DIVA Repertoire {filter_title}', fontsize=20, fontweight='bold')
     fig_d.tight_layout(rect=[0, 0.03, 1, 0.94])
     plt.savefig(os.path.join(out_dir, f'diva_histograms_{"filtered" if apply_filter else "unfiltered"}.png'), dpi=300)
-    plt.show()
+    # plt.show()
 
 # Run both states to get full behavioral picture
 run_diva_monte_carlo(apply_filter=False)
